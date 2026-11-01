@@ -1,0 +1,89 @@
+name: build-libfoxpostfx
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+  pull_request:
+
+env:
+  NDK_VERSION: "27.2.12479018"   # r27c (same NDK the APK's libgtavvk.so was built with)
+  ANDROID_PLATFORM: android-26
+  ANDROID_ABI: arm64-v8a
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Locate project root (works with or without a foxpostfx/ subfolder)
+        run: |
+          set -e
+          CML="$(find . -maxdepth 3 -name CMakeLists.txt | head -1)"
+          test -n "$CML" || { echo "CMakeLists.txt not found - repo contents:"; find . -not -path './.git/*' | head -50; exit 1; }
+          ROOT="$(cd "$(dirname "$CML")" && pwd)"
+          echo "ROOT=$ROOT" >> "$GITHUB_ENV"; echo "project root: $ROOT"; ls -R "$ROOT" | head -40
+
+      - name: Install NDK r27c + cmake
+        run: |
+          set -e
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$SDK/cmdline-tools/latest/bin/sdkmanager" "ndk;${NDK_VERSION}" "cmake;3.22.1" >/dev/null
+          echo "NDK=$SDK/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "CMAKE=$SDK/cmake/3.22.1/bin/cmake" >> "$GITHUB_ENV"
+          echo "NINJA=$SDK/cmake/3.22.1/bin/ninja" >> "$GITHUB_ENV"
+
+      - name: Compile shaders to SPIR-V (glslc from NDK)
+        run: |
+          GLSLC="$NDK/shader-tools/linux-x86_64/glslc"
+          test -x "$GLSLC" || { echo "glslc not found in NDK"; ls "$NDK/shader-tools" || true; exit 1; }
+          bash "$ROOT/gen_spv.sh" "$GLSLC" "$ROOT/build/gen"
+
+      - name: Configure + build (normal)
+        run: |
+          "$CMAKE" -S "$ROOT" -B "$ROOT/build/normal" -G Ninja -DCMAKE_MAKE_PROGRAM="$NINJA" \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI="$ANDROID_ABI" -DANDROID_PLATFORM="$ANDROID_PLATFORM" \
+            -DANDROID_STL=c++_static -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON \
+            -DCMAKE_BUILD_TYPE=Release -DFOXPOSTFX_GEN_DIR="$ROOT/build/gen"
+          "$CMAKE" --build "$ROOT/build/normal"
+
+      - name: Configure + build (drop-in libgtavvk.so)
+        run: |
+          "$CMAKE" -S "$ROOT" -B "$ROOT/build/dropin" -G Ninja -DCMAKE_MAKE_PROGRAM="$NINJA" \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI="$ANDROID_ABI" -DANDROID_PLATFORM="$ANDROID_PLATFORM" \
+            -DANDROID_STL=c++_static -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON \
+            -DCMAKE_BUILD_TYPE=Release -DFOXPOSTFX_DROPIN=ON -DFOXPOSTFX_GEN_DIR="$ROOT/build/gen"
+          "$CMAKE" --build "$ROOT/build/dropin"
+
+      - name: Package
+        run: |
+          set -e
+          cd "$ROOT"
+          STRIP="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+          mkdir -p out/normal out/dropin
+          cp build/normal/libfoxpostfx.so out/normal/
+          cp build/dropin/libgtavvk.so    out/dropin/
+          "$STRIP" --strip-unneeded out/normal/libfoxpostfx.so out/dropin/libgtavvk.so
+          cp foxpostfx.cfg out/normal/; cp foxpostfx.cfg out/dropin/
+          echo "== exports ==";  "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" -D --defined-only out/normal/libfoxpostfx.so
+          echo "== needed ==";   "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -d out/normal/libfoxpostfx.so | grep -E "NEEDED|SONAME"
+          ls -l out/normal out/dropin
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libfoxpostfx-arm64-v8a
+          path: ${{ env.ROOT }}/out/
+          if-no-files-found: error
+
+      - name: Release (only when you push a tag like v1)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.ROOT }}/out/normal/libfoxpostfx.so
+            ${{ env.ROOT }}/out/dropin/libgtavvk.so
+            ${{ env.ROOT }}/foxpostfx.cfg

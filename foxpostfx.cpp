@@ -335,7 +335,8 @@ static bool initSwap(Swap* s, uint32_t family) {
     ad.samples = VK_SAMPLE_COUNT_1_BIT;
     ad.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     ad.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    ad.stencilLoadOp = ad.stencilStoreOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    ad.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    ad.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     ad.initialLayout = ad.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     VkAttachmentReference ar{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
     VkSubpassDescription sp{};

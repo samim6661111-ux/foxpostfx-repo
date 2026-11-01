@@ -9,7 +9,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
 
-add_library(foxpostfx SHARED src/foxpostfx.cpp)
+add_library(foxpostfx SHARED foxpostfx.cpp)
 target_include_directories(foxpostfx PRIVATE "${FOXPOSTFX_GEN_DIR}")
 target_compile_options(foxpostfx PRIVATE -O2 -Wall -Wextra -Wno-unused-parameter -fno-exceptions -fno-rtti)
 target_link_libraries(foxpostfx PRIVATE log dl)
