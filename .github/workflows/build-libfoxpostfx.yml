@@ -1,0 +1,73 @@
+name: build-libfoxpostfx
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths: ["src/**", "shaders/**", "tools/**", "CMakeLists.txt", "foxpostfx.cfg", ".github/workflows/**"]
+  pull_request:
+
+env:
+  NDK_VERSION: "27.2.12479018"
+  ANDROID_PLATFORM: android-26
+  ANDROID_ABI: arm64-v8a
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install NDK r27c + cmake
+        run: |
+          set -e
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$SDK/cmdline-tools/latest/bin/sdkmanager" "ndk;${NDK_VERSION}" "cmake;3.22.1" >/dev/null
+          echo "NDK=$SDK/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "CMAKE=$SDK/cmake/3.22.1/bin/cmake" >> "$GITHUB_ENV"
+          echo "NINJA=$SDK/cmake/3.22.1/bin/ninja" >> "$GITHUB_ENV"
+
+      - name: Compile shaders to SPIR-V
+        run: |
+          GLSLC="$NDK/shader-tools/linux-x86_64/glslc"
+          test -x "$GLSLC" || { echo "glslc not found"; ls "$NDK/shader-tools" || true; exit 1; }
+          chmod +x tools/gen_spv.sh
+          tools/gen_spv.sh "$GLSLC" build/gen
+
+      - name: Build (normal)
+        run: |
+          "$CMAKE" -S . -B build/normal -G Ninja -DCMAKE_MAKE_PROGRAM="$NINJA" \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI="$ANDROID_ABI" -DANDROID_PLATFORM="$ANDROID_PLATFORM" \
+            -DANDROID_STL=c++_static -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON \
+            -DCMAKE_BUILD_TYPE=Release -DFOXPOSTFX_GEN_DIR="$PWD/build/gen"
+          "$CMAKE" --build build/normal
+
+      - name: Build (drop-in libgtavvk.so)
+        run: |
+          "$CMAKE" -S . -B build/dropin -G Ninja -DCMAKE_MAKE_PROGRAM="$NINJA" \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI="$ANDROID_ABI" -DANDROID_PLATFORM="$ANDROID_PLATFORM" \
+            -DANDROID_STL=c++_static -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON \
+            -DCMAKE_BUILD_TYPE=Release -DFOXPOSTFX_DROPIN=ON -DFOXPOSTFX_GEN_DIR="$PWD/build/gen"
+          "$CMAKE" --build build/dropin
+
+      - name: Package
+        run: |
+          set -e
+          BIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          mkdir -p out/normal out/dropin
+          cp build/normal/libfoxpostfx.so out/normal/
+          cp build/dropin/libgtavvk.so out/dropin/
+          "$BIN/llvm-strip" --strip-unneeded out/normal/libfoxpostfx.so out/dropin/libgtavvk.so
+          cp foxpostfx.cfg out/normal/
+          cp foxpostfx.cfg out/dropin/
+          "$BIN/llvm-nm" -D --defined-only out/normal/libfoxpostfx.so
+          ls -l out/normal out/dropin
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libfoxpostfx-arm64-v8a
+          path: out/
+          if-no-files-found: error
